@@ -7,7 +7,12 @@ module sensor_simulator (
     output reg [7:0] sensor_temp_motor,
     output reg [7:0] sensor_temp_ar,
     output reg [7:0] sensor_map,
-    output reg sensor_tdc
+    output reg sensor_tdc,
+
+    // Entradas adicionais da TCU (cambio)
+    output reg [15:0] vehicle_speed,
+    output reg        brake,
+    output reg [7:0]  drive_mode
 );
 
 // Parâmetros dos cenários de teste
@@ -17,6 +22,7 @@ parameter ACCELERATION = 3'd2;   // Aceleração gradual
 parameter CRUISE = 3'd3;         // Regime de cruzeiro
 parameter OVERREV = 3'd4;        // Proteção de RPM alto
 parameter OVERHEAT = 3'd5;       // Proteção de superaquecimento
+parameter TCU_DRIVE = 3'd6;      // Câmbio em D: motor em cruzeiro + rampa de velocidade
 
 reg [31:0] cycle_counter;
 reg [15:0] tdc_counter;
@@ -56,6 +62,33 @@ always @(posedge clk or posedge rst) begin
         cycle_counter <= 0;
     else
         cycle_counter <= cycle_counter + 1;
+end
+
+// Sinais adicionais p/ TCU.
+//  - Nos cenarios de ignicao/injecao (0..5) o cambio fica em NEUTRO
+//    (drive_mode=2): TCU ociosa, sem interferir nos atuadores.
+//  - No cenario TCU_DRIVE (6) o cambio vai para D (drive_mode=3) e a velocidade
+//    do veiculo sobe em rampa lenta, fazendo o cambio subir de marcha; a cada
+//    troca o torque_cut da TCU atua sobre ignicao/injecao.
+always @(posedge clk or posedge rst) begin
+    if (rst) begin
+        vehicle_speed <= 16'd0;
+        brake         <= 1'b0;
+        drive_mode    <= 8'd2; // N (neutro): TCU ociosa
+    end else if (test_scenario == TCU_DRIVE) begin
+        drive_mode <= 8'd3;    // D
+        brake      <= 1'b0;
+        // rampa lenta: +1 unidade a cada 64 ciclos (mantem a inclinacao
+        // estimada no deadband), saturando em 120
+        if ((cycle_counter >> 6) < 32'd120)
+            vehicle_speed <= cycle_counter[21:6];
+        else
+            vehicle_speed <= 16'd120;
+    end else begin
+        drive_mode    <= 8'd2; // N
+        brake         <= 1'b0;
+        vehicle_speed <= sensor_rpm >> 6; // proxy simples (sem efeito em N)
+    end
 end
 
 // Geração dos valores dos sensores baseado no cenário
@@ -160,6 +193,16 @@ always @(posedge clk or posedge rst) begin
                 sensor_map <= 8'd70;
             end
             
+            TCU_DRIVE: begin
+                // Motor em cruzeiro estavel; a velocidade do veiculo (rampa)
+                // e gerada no bloco da TCU abaixo, fazendo o cambio subir marcha.
+                sensor_rpm <= 16'd3000;
+                sensor_tps <= 8'd40;
+                sensor_temp_motor <= 8'd90;
+                sensor_temp_ar <= 8'd25;
+                sensor_map <= 8'd50;
+            end
+
             default: begin
                 // Idle como padrão
                 sensor_rpm <= 16'd800;

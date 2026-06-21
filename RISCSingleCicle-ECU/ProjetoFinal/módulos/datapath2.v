@@ -17,7 +17,12 @@ module datapath2 (
   input [7:0] sensor_temp_ar,
   input [7:0] sensor_map,
   input sensor_tdc,
-  
+
+  // Sinais adicionais da TCU (cambio)
+  input [15:0] vehicle_speed,
+  input        brake,
+  input [7:0]  drive_mode,
+
   // Sinais dos atuadores
   output [7:0] ignition_advance,
   output [15:0] injection_time,
@@ -83,6 +88,9 @@ module datapath2 (
     .sensor_temp_ar(sensor_temp_ar),
     .sensor_map(sensor_map),
     .sensor_tdc(sensor_tdc),
+    .vehicle_speed(vehicle_speed),
+    .brake(brake),
+    .drive_mode(drive_mode),
     .ignition_advance(ignition_advance),
     .injection_time(injection_time),
     .ignition_trigger(ignition_trigger),

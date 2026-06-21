@@ -11,6 +11,11 @@ wire [7:0] sensor_temp_ar;
 wire [7:0] sensor_map;
 wire sensor_tdc;
 
+// Sinais adicionais da TCU (cambio)
+wire [15:0] vehicle_speed;
+wire        brake;
+wire [7:0]  drive_mode;
+
 // Sinais dos atuadores
 wire [7:0] ignition_advance;
 wire [15:0] injection_time;
@@ -37,6 +42,14 @@ reg [7:0] adv_sample1, adv_sample2, adv_sample3;
 integer passed_tests;
 integer failed_tests;
 
+// Monitoramento do cenário de câmbio em D (TCU)
+localparam integer TCU_SETTLE_NS = 75000; // ~7500 ciclos: cobre varias trocas
+reg       tcu_active;     // habilita o monitor da TCU
+reg       saw_cut_adv;    // viu avanco forcado a 5 durante torque-cut
+reg       saw_cut_inj;    // viu injecao cortada durante torque-cut
+reg [7:0] adv_normal;     // avanco "normal" (fora da troca), p/ contraste
+reg [7:0] tcu_gear_max;   // maior marcha-alvo atingida
+
 // Instância do simulador de sensores
 sensor_simulator sensors (
     .clk(clk),
@@ -47,7 +60,10 @@ sensor_simulator sensors (
     .sensor_temp_motor(sensor_temp_motor),
     .sensor_temp_ar(sensor_temp_ar),
     .sensor_map(sensor_map),
-    .sensor_tdc(sensor_tdc)
+    .sensor_tdc(sensor_tdc),
+    .vehicle_speed(vehicle_speed),
+    .brake(brake),
+    .drive_mode(drive_mode)
 );
 
 // Instância da CPU (ECU)
@@ -60,6 +76,9 @@ cpu ecu (
     .sensor_temp_ar(sensor_temp_ar),
     .sensor_map(sensor_map),
     .sensor_tdc(sensor_tdc),
+    .vehicle_speed(vehicle_speed),
+    .brake(brake),
+    .drive_mode(drive_mode),
     .ignition_advance(ignition_advance),
     .injection_time(injection_time),
     .ignition_trigger(ignition_trigger),
@@ -79,10 +98,34 @@ always @(posedge clk) begin
     end
 end
 
+// Monitor do efeito do torque-cut da TCU sobre os atuadores (cenário 7).
+// Usa referências hierárquicas aos sinais internos da TCU para correlacionar
+// o pedido de corte de torque com o que aparece nos atuadores.
+always @(posedge clk) begin
+    if (rst) begin
+        saw_cut_adv  <= 1'b0;
+        saw_cut_inj  <= 1'b0;
+        adv_normal   <= 8'd0;
+        tcu_gear_max <= 8'd0;
+    end else if (tcu_active) begin
+        if (ecu.dp2.io.tcu_torque_cut) begin
+            // durante a troca, o io_controller forca avanco=5 e injecao a 25%
+            if (ignition_advance == 8'd5) saw_cut_adv <= 1'b1;
+            if (injection_time   <  16'd500) saw_cut_inj <= 1'b1;
+        end else begin
+            // fora da troca: valor real calculado pelo firmware
+            if (ignition_advance > 8'd5) adv_normal <= ignition_advance;
+        end
+        if (ecu.dp2.io.tcu_target_gear > tcu_gear_max)
+            tcu_gear_max <= ecu.dp2.io.tcu_target_gear;
+    end
+end
+
 // Sequência de testes
 initial begin
     passed_tests = 0;
     failed_tests = 0;
+    tcu_active = 1'b0;
     
     $display("========================================================================");
     $display("     ECU AUTOMOTIVE TESTBENCH - Motor Monocilindrico");
@@ -286,6 +329,57 @@ initial begin
         failed_tests = failed_tests + 1;
     end
     
+    //==========================================================================
+    // CENÁRIO 7: CÂMBIO AUTOMÁTICO EM D (TCU + integração com atuadores)
+    //==========================================================================
+    $display("");
+    $display("========================================================================");
+    $display("CENARIO 7: CAMBIO AUTOMATICO EM D (TCU)");
+    $display("========================================================================");
+    $display("Objetivo: cambio em D sobe de marcha enquanto o motor roda; a cada");
+    $display("          troca o torque-cut da TCU reduz avanco/injecao (integracao)");
+    $display("Condicoes: RPM=3000, TPS=40%%, modo=D, velocidade em rampa");
+    $display("");
+
+    rst = 1;
+    #20;
+    rst = 0;
+    test_scenario = 3'd6; // TCU_DRIVE
+    tcu_active = 1'b1;     // habilita o monitor da TCU
+
+    #(TCU_SETTLE_NS);     // tempo p/ varias trocas de marcha
+
+    tcu_active = 1'b0;
+    $display("Resultado TCU: marcha-alvo max=%0d | avanco normal=%0d | avanco no corte=%0s",
+             tcu_gear_max, adv_normal, (saw_cut_adv ? "5 (cortado)" : "nao visto"));
+
+    // Validação 1: houve subida de marcha em modo D
+    if (tcu_gear_max >= 8'd4) begin
+        $display("[PASS] Cambio subiu de marcha em modo D (marcha-alvo atingiu %0d)", tcu_gear_max);
+        passed_tests = passed_tests + 1;
+    end else begin
+        $display("[FAIL] Cambio nao subiu como esperado (marcha-alvo max=%0d)", tcu_gear_max);
+        failed_tests = failed_tests + 1;
+    end
+
+    // Validação 2: o torque-cut reduziu o avanço de ignição durante a troca
+    if (saw_cut_adv && adv_normal > 8'd5) begin
+        $display("[PASS] Torque-cut reduziu o avanco para 5 na troca (normal era %0d)", adv_normal);
+        passed_tests = passed_tests + 1;
+    end else begin
+        $display("[FAIL] Torque-cut nao reduziu o avanco (saw_cut=%b, normal=%0d)", saw_cut_adv, adv_normal);
+        failed_tests = failed_tests + 1;
+    end
+
+    // Validação 3: o torque-cut cortou a injeção durante a troca
+    if (saw_cut_inj) begin
+        $display("[PASS] Torque-cut cortou a injecao durante a troca (<500us)");
+        passed_tests = passed_tests + 1;
+    end else begin
+        $display("[FAIL] Torque-cut nao cortou a injecao durante a troca");
+        failed_tests = failed_tests + 1;
+    end
+
     //==========================================================================
     // RESUMO FINAL
     //==========================================================================
