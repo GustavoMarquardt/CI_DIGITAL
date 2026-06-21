@@ -72,6 +72,13 @@ RPM 6000:   25°  27°  29°  31°  33°  33°  34°  35°
 | 0x100C | Temp Ar | 8 | -20-60 | Temperatura do ar admitido (°C) |
 | 0x1010 | MAP | 8 | 0-100 | Manifold Absolute Pressure (kPa normalizado) |
 | 0x1014 | TDC | 1 | 0-1 | Top Dead Center sensor (pulso) |
+| 0x1018 | Velocidade veículo | 16 | 0-255 | Velocidade do veículo (entrada da TCU) |
+| 0x101C | Freio | 1 | 0-1 | Pedal de freio acionado (entrada da TCU) |
+| 0x1020 | Seletor/Modo | 8 | - | Câmbio: bits[1:0]=0 P,1 R,2 N,3 D; bit[2]=sport |
+
+> **Inclinação da pista**: não há sensor dedicado. É **estimada por dinâmica
+> longitudinal** no módulo `tcu_incline_estimator.v` (isolado, substituível por
+> um sensor depois) e exposta apenas para observação em `0x2024`.
 
 ### Exemplo de Leitura
 
@@ -95,6 +102,23 @@ RPM 6000:   25°  27°  29°  31°  33°  33°  34°  35°
 | 0x2004 | Tempo Injeção | 16 | 0-5000 | Duração do pulso do injetor (μs) |
 | 0x2008 | Trigger Ignição | 1 | 0-1 | Sinal de disparo da bobina |
 | 0x2010 | Safety Flags | 8 | - | Flags de segurança (read/write) |
+
+### Saídas da TCU (Câmbio) — Read-Only - 0x2014+
+
+Refletem o estado do `tcu_controller.v` (hardware autônomo). Somente leitura.
+
+| Endereço | Saída | Bits | Descrição |
+|----------|-------|------|-----------|
+| 0x2014 | Marcha-alvo | 8 | 0=N, 1–5=marchas à frente, 6=R |
+| 0x2018 | Solenoides de troca | 8 | Padrão de solenoides acionado no engate |
+| 0x201C | Pressão de embreagem | 8 | 0–255 (255 = totalmente acoplada) |
+| 0x2020 | Status TCU | 8 | bit7=shifting, bit6=torque_cut, bits[5:0]=marcha atual |
+| 0x2024 | Inclinação estimada | 8 | Signed (+aclive / −declive), sign-extended na leitura |
+
+> **Integração injeção+câmbio**: enquanto `torque_cut=1` (durante a troca), o
+> `io_controller` força o avanço de ignição ao mínimo (5°) e corta a injeção a
+> 25%, restaurando ao fim da troca. Esse é o ponto de acoplamento entre a TCU e
+> os atuadores já existentes (0x2000/0x2004).
 
 ### Safety Flags (0x2010)
 
@@ -163,13 +187,16 @@ RPM 6000:   25°  27°  29°  31°  33°  33°  34°  35°
 └─────────────────────────────────────┘ 0x00000FFF
 
 ┌─────────────────────────────────────┐ 0x00001000
-│  SENSORES (Read-Only)               │
+│  SENSORES / ENTRADAS (Read-Only)    │
 │  ├─ 0x1000: RPM                     │
 │  ├─ 0x1004: TPS                     │
 │  ├─ 0x1008: Temp Motor              │
 │  ├─ 0x100C: Temp Ar                 │
 │  ├─ 0x1010: MAP                     │
-│  └─ 0x1014: TDC                     │
+│  ├─ 0x1014: TDC                     │
+│  ├─ 0x1018: Velocidade veículo [TCU]│
+│  ├─ 0x101C: Freio          [TCU]    │
+│  └─ 0x1020: Seletor/Modo   [TCU]    │
 └─────────────────────────────────────┘ 0x00001FFF
 
 ┌─────────────────────────────────────┐ 0x00002000
@@ -177,7 +204,12 @@ RPM 6000:   25°  27°  29°  31°  33°  33°  34°  35°
 │  ├─ 0x2000: Avanço Ignição          │
 │  ├─ 0x2004: Tempo Injeção           │
 │  ├─ 0x2008: Trigger Ignição         │
-│  └─ 0x2010: Safety Flags            │
+│  ├─ 0x2010: Safety Flags            │
+│  ├─ 0x2014: Marcha-alvo      [TCU]  │
+│  ├─ 0x2018: Solenoides       [TCU]  │
+│  ├─ 0x201C: Pressão embreagem[TCU]  │
+│  ├─ 0x2020: Status TCU       [TCU]  │
+│  └─ 0x2024: Inclinação est.  [TCU]  │
 └─────────────────────────────────────┘ 0x00002FFF
 ```
 

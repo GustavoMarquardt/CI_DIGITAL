@@ -314,6 +314,101 @@ def calculate_injection_time(map_sensor, rpm, temp_ar, temp_motor):
 └─────────────────────────────────┘
 ```
 
+## 3.5 Controle de Câmbio Automático (TCU)
+
+A **TCU (Transmission Control Unit)** é um controlador de câmbio automático
+escalonado (5 marchas à frente + N + R) implementado **em hardware** como uma
+máquina de estados dedicada (`tcu_controller.v`), rodando em paralelo ao
+firmware de ignição/injeção. Convive com a ECU reutilizando a infraestrutura de
+I/O mapeado em memória (entradas em `0x1018+`, saídas em `0x2014+`).
+
+> **Por que hardware e não assembly?** Os três comportamentos de conforto são
+> centrados em tempo e estado (histerese, dwell, lock, janela de torque-cut). Uma
+> FSM com contadores de ciclo expressa isso de forma determinística e evita o
+> limite de capacidade da `data_memory` (apenas ~58 words livres). As tabelas da
+> TCU ficam como `localparam` no módulo (parametrizáveis).
+
+### 3.5.1 Codificação de marcha e seletor
+
+- Marcha (`target_gear`/`current_gear`): `0 = N`, `1..5 = marchas à frente`, `6 = R`.
+- Seletor/modo (`drive_mode`): bits[1:0] = `0 P, 1 R, 2 N, 3 D`; bit[2] = sport.
+- A troca automática só ocorre em **D**.
+
+### 3.5.2 Shift map e HISTERESE (anti-hunting)
+
+O núcleo é um mapa de troca indexado por **(faixa de TPS × velocidade)**. A
+histerese é modelada com **dois limiares separados** por fronteira de marcha:
+
+- `up_base[band][g]` — velocidade para **SUBIR** de `g` para `g+1`.
+- `dn_base[band][g]` — velocidade para **DESCER** de `g` para `g-1`.
+- Por construção `dn_base[g+1] < up_base[g]`: o **vão** entre eles é o que
+  impede o "fica-trocando" quando a velocidade fica colada no ponto de troca.
+
+Com pouco acelerador (band baixa) as trocas acontecem cedo (econômico/suave);
+com o pé fundo (band alta) cada marcha é segurada mais alto (torque). Em faixa de
+TPS = 100% os limiares de descida sobem (efeito **kickdown**: força a descida).
+
+### 3.5.3 Compensação de rampa (inclinação estimada)
+
+A inclinação **não usa sensor**; é estimada por dinâmica longitudinal no módulo
+isolado `tcu_incline_estimator.v`:
+
+```
+aceleração_real      = Δ(velocidade) na janela de amostragem
+aceleração_esperada  ≈ torque disponível (proxy: MAP/8)
+inclinação           ≈ esperada − real     ( >0 aclive ; <0 declive )
+```
+
+- **Aclive** (`inclinação ≥ ACLIVE_TH`): atrasa subidas (`up += RAMP_UP`) e
+  adianta descidas (`dn += RAMP_DN`) para segurar torque.
+- **Declive** (`inclinação ≤ DECLIVE_TH`): **bloqueia subidas** e segura marcha
+  baixa (`dn += DECLIVE_HLD`) para freio-motor.
+- **Freio** acionado também bloqueia subidas e favorece freio-motor.
+
+Por ser um módulo isolado, basta trocá-lo por um que leia um sensor dedicado no
+futuro, sem alterar a FSM.
+
+### 3.5.4 Troca confortável (FSM: dwell, lock, torque-cut)
+
+```
+        ┌─────────┐  troca pedida & dwell cumprido   ┌─────────┐
+        │ S_DRIVE │ ───────────────────────────────► │  S_CUT  │  torque_cut=1
+        │ (marcha │                                   │ (corta  │
+        │ estável)│ ◄───────────────┐                 │ torque) │
+        └─────────┘   troca fim     │                 └────┬────┘
+             ▲      (dwell zera)    │                      │ T_CUT
+             │                 ┌────┴─────┐            ┌────▼────┐
+             └─────────────────│S_RESTORE │◄───────────│S_ENGAGE │
+                  T_RESTORE    │(restaura │   T_ENGAGE  │(solenoid│
+                               │ torque)  │             │+clutch) │
+                               └──────────┘             └─────────┘
+```
+
+- **Dwell timer**: tempo mínimo na marcha antes de permitir nova troca
+  (anti-hunting no tempo, além da histerese no espaço).
+- **Lock** (`shifting=1`): nenhuma nova decisão é avaliada durante a troca.
+- **Torque-cut**: durante `S_CUT`/`S_ENGAGE` o sinal `torque_cut` pede redução de
+  torque; o `io_controller` aplica isso atrasando o avanço (5°) e cortando a
+  injeção a 25%, restaurando ao final — **integração injeção+câmbio**.
+
+Os tempos (`DWELL_MIN`, `T_CUT`, `T_ENGAGE`, `T_RESTORE`, `SAMPLE_CYCLES`) são
+contados em **ciclos de clock** e parametrizáveis. Com clock de 100 MHz (10 ns)
+os valores do testbench são escalados para a simulação; num ECU real escalam
+para centenas de ms ajustando os parâmetros.
+
+### 3.5.5 Validação
+
+`testbenches/tcu_tb.v` (12 checagens, todas `✓ PASS`) cobre: subida e descida
+normais, anti-hunting em velocidade colada no ponto de troca, histerese (sobe e
+não volta no mesmo ponto), kickdown, aclive (subida atrasada) e declive (nunca
+sobe / freio-motor), além de confirmar o corte de torque nas trocas.
+
+```powershell
+iverilog -g2012 -o sim.vvp módulos/tcu_controller.v `
+         módulos/tcu_incline_estimator.v testbenches/tcu_tb.v
+vvp sim.vvp
+```
+
 ## 4. Sincronização com TDC
 
 ### 4.1 Importância
