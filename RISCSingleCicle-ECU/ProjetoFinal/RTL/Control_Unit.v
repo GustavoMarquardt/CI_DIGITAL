@@ -8,14 +8,27 @@ module Control_Unit (
   output RegWrite,
   input [2:0] funct3,
   input zero,
-  input funct7,
+  input negative,
+  input [1:0] funct7,
   output [2:0] ALUControl
 );
 
 wire Branch;
 wire Jump;
 wire [1:0] ALUOp;
-assign PCSrc = (Branch & zero) | Jump;
+
+reg branch_condition;
+always @(*) begin
+    case (funct3)
+        3'b000: branch_condition = zero;                 // BEQ: rs1 == rs2
+        3'b001: branch_condition = ~zero;                // BNE: rs1 != rs2
+        3'b100: branch_condition = negative & ~zero;     // BLT: rs1 < rs2 (signed, negative and not zero)
+        3'b101: branch_condition = ~negative | zero;     // BGE: rs1 >= rs2 (signed, positive or zero)
+        default: branch_condition = 1'b0;
+    endcase
+end
+
+assign PCSrc = (Branch & branch_condition) | Jump;
 Main_Decoder maindecoder (
   .op(op),
   .Branch(Branch),

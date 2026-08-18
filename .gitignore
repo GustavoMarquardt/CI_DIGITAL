@@ -1,0 +1,19 @@
+# Xcelium e ModelSim
+**/xcelium.d/
+**/work/
+**/cov_work/
+**/.simvision/
+**/waves.shm/
+
+# Simulação
+*.vcd
+*.fsdb
+*.shm
+*.pak
+*.history
+*.tstamp
+
+# UVM teste e core sem FPU
+**/tb_/
+**/Core_no_FPU/
+**/SYNTHESIS/fv/
