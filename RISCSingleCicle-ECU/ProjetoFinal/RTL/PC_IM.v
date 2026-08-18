@@ -25,6 +25,6 @@ begin
     #4;
     PC = PC + 4; // Incrementa mais uma vez o PC para a próxima instrução
     #4;
-    $finish;
+    // $finish; // Commented out to avoid premature simulation termination
 end
 endmodule

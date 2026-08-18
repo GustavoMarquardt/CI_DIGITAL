@@ -50,15 +50,13 @@ end
 
 always @ (posedge clk)
 begin
-    if (WE)
-        begin
-            register[A3] <= WD3; // Escrita no registrador de endereço A3
-        end
+    if (WE && A3 != 5'd0)
+        register[A3] <= WD3;
 end
 
 always @ (*)
 begin
-    RD1 = register[A1]; // Leitura no endereço 1
-    RD2 = register[A2]; // Leitura bo endereço 2
+    RD1 = (A1 == 5'd0) ? 32'd0 : register[A1];
+    RD2 = (A2 == 5'd0) ? 32'd0 : register[A2];
 end
 endmodule

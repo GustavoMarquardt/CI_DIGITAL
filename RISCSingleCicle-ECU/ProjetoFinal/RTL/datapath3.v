@@ -25,9 +25,10 @@ localparam N = 32;
     .out(ImmExt)
   );
 
+  // Branches e JAL: alvo = PC da instrução + imediato (não PC+4)
   carry_look_ahead #(.N(N)) sum2 (
     .A(ImmExt),
-    .B(PCPlus4),
+    .B(PC),
     .C_in(1'b0),
     .S(PCTarget),
     .C_out(C_out)

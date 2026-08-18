@@ -6,8 +6,8 @@ module Main_Decoder (
     output reg ALUSrc,
     output reg [1:0] ImmSrc,
     output reg RegWrite,
-    output reg [1:0] ALUOp
-    output reg Jump;
+    output reg [1:0] ALUOp,
+    output reg Jump
     );
 
 always @ (*)
